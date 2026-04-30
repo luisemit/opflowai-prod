@@ -1,0 +1,97 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── BACKEND: Deploy Python Worker ─────────────────────────────────
+  deploy-worker:
+    name: Deploy API Worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Solo deploy a producción en push a main (no en PRs)
+      - name: Deploy to Cloudflare Workers (Production)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ./backend
+          command: deploy --env production
+
+      # PRs van a staging para revisión
+      - name: Deploy to Cloudflare Workers (Staging)
+        if: github.event_name == 'pull_request'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ./backend
+          command: deploy --env staging
+
+  # ── FRONTEND: Deploy Next.js a Cloudflare Pages ────────────────────
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ./frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Next.js
+        run: npm run build
+        env:
+          # Variables públicas del frontend (no secretas)
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_API_URL: https://api.tuempresa.com
+
+      # Cloudflare Pages detecta automáticamente Next.js
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ./frontend
+          command: pages deploy .next --project-name=tuempresa-frontend --branch=${{ github.ref_name }}
+
+# ═══════════════════════════════════════════════════════════════════
+# SECRETS REQUERIDOS EN GITHUB (Settings → Secrets → Actions):
+# ─────────────────────────────────────────────────────────────────
+# CLOUDFLARE_API_TOKEN        → Cloudflare Dashboard → My Profile → API Tokens
+#                               Permisos: Workers:Edit, Pages:Edit, Zone:Read
+# CLOUDFLARE_ACCOUNT_ID       → Cloudflare Dashboard → lado derecho del home
+# NEXT_PUBLIC_SUPABASE_URL    → Supabase → Project Settings → API
+# NEXT_PUBLIC_SUPABASE_ANON_KEY → Supabase → Project Settings → API (anon public)
+# ═══════════════════════════════════════════════════════════════════
